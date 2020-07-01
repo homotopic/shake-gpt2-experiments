@@ -179,15 +179,16 @@ stripRawBlock :: [Block] -> [Block]
 stripRawBlock t@((RawBlock _ _) : xs) = stripRawBlock xs
 stripRawBlock x = x
 
-data PageQ = PageQ1 | PageQ2
+data ApiType = ApiType1 | ApiType2
   deriving (Eq, Show, Generic)
 
-instance FromJSON PageQ
+instance FromJSON ApiType
 
 data WikiManifest = WikiManifest {
-  api     :: Text
-, include :: [Text]
-, pageQ   :: PageQ
+  api               :: Text
+, apiType           :: ApiType
+, includeCategories :: [Text]
+, includePages      :: [Text]
 } deriving (Eq, Show, Generic)
 
 instance FromJSON WikiManifest
