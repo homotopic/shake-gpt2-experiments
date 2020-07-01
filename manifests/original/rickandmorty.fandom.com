@@ -1,5 +1,5 @@
-api:https://rickandmorty.fandom.com/api.php
-apiType: ApiType22
+api: api.php
+apiType: ApiType2
 includeCategories:
 - Category:Characters
 includePages: []

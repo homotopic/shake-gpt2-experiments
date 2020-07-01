@@ -14,6 +14,7 @@ import qualified Data.Yaml as Yaml
 import           RIO hiding (some, try, many)
 import qualified RIO.ByteString as BS
 import qualified RIO.ByteString.Lazy as LBS
+import qualified RIO.HashMap as HM
 import           RIO.List
 import           RIO.Partial
 import           RIO.List.Partial
@@ -197,6 +198,7 @@ data WikiManifest = WikiManifest {
 instance FromJSON WikiManifest
 instance ToJSON WikiManifest
 
+apiType1 :: Value -> Text
 apiType1 = view (key "query"
                . key "pages" . values
                . key "revisions" . values
@@ -204,8 +206,11 @@ apiType1 = view (key "query"
                . key "main"
                . key "content" . _String)
 
+apiType2 :: Value -> Text
+apiType2 = view (_String) . fromJust . HM.lookup "*" . view (_Object) . head . toListOf (key "revisions" . values) . head . HM.elems . view (key "query" . key "pages" . _Object)
+ 
 switchContent ApiType1 = apiType1
-switchContent ApiType2 = undefined
+switchContent ApiType2 = apiType2
 
 recCollectP :: (MonadUnliftAction m, Ord a) => (a -> m (Set a)) -> Set a -> a -> m (Set a)
 recCollectP g exs x = do
@@ -222,7 +227,7 @@ main = runSimpleShakePlus $ do
       pullJson x = do
        logInfo $ displayShow $ "Polling " <> x
        k <- jsonLookup . RemoteJSONLookup $ x
-       logDebug $ displayShow $ "Receieved: " <> (T.pack $ show k)
+--       logInfo $ displayShow $ "Receieved: " <> (T.pack $ show k)
        return k
 
   let subcatRequest u a x = pullJson $ "https://" <> u <> "/" <> a <> "?action=query&list=categorymembers&cmtitle=" <> x <> "&cmlimit=500&cmtype=subcat&format=json"
@@ -245,8 +250,9 @@ main = runSimpleShakePlus $ do
       (WikiManifest{..}) <- Yaml.decodeThrow =<< BS.readFile (toFilePath src)
       (x, _) <- splitExtension . filename $ out
       y <- contentRequest k api (T.pack . toFilePath $ x)
-      let y' = apiType1 y
-      writeFile' out y'
+      let (y' :: Text) = switchContent apiType y
+      --logInfo $ displayShow $ y'
+      writeFile' out $ y'
 
   ("*/*.md" `within` $(mkRelDir "processed/markdown")) %^> \out -> do
     src <- blinkAndMapM $(mkRelDir "raw/mediawiki") (replaceExtension ".mediawiki") out
@@ -270,7 +276,7 @@ main = runSimpleShakePlus $ do
     let ys' = foldr S.union S.empty ys
     logInfo $ displayShow $ ys'
     zs <- forP (includeCategories <> toList ys') $ pagesRequest (T.pack $ toFilePath $ extract out) api
-    let zs' = filter (not .  T.isInfixOf "/") $ join $ viewCmTitles <$> zs
+    let zs' = filter (not .  (\x -> T.isInfixOf "/" x || T.isInfixOf "&" x || T.isInfixOf "%" x)) $ join $ viewCmTitles <$> zs
     BS.writeFile (toFilePath . fromWithin $ out) $ Yaml.encode $ WikiManifest {includeCategories = [], includePages = zs', .. }
 
   let wikiManifest :: HasLogFunc r => Text -> RAction r ()

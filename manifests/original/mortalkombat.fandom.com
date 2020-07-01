@@ -1,4 +1,4 @@
-api: https://mortalkombat.fandom.com/api.php
+api: api.php
 apiType: ApiType2
 includeCategories:
 - Category:Mortal_Kombat
