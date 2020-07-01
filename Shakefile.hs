@@ -35,6 +35,9 @@ import qualified Control.Exception as EUnsafe
 import Control.Monad.Catch hiding (try)
 import           Text.Pandoc.Walk
 
+myMDWriterOptions :: WriterOptions
+myMDWriterOptions = def { writerExtensions = pandocExtensions }
+
 type Parser = Parsec Void Text
 
 squiggles :: Parser a -> Parser a
@@ -163,9 +166,9 @@ isJunkSection [] = True
 stripJunkSections :: [Block] -> [Block]
 stripJunkSections = join . filter (not . isJunkSection) . splitSections 
 
-stripMWData :: [Inline] -> [Inline]
-stripMWData t@((Str x) : xs) = if "{{#data:" `T.isPrefixOf` x then [] else t
-stripMWData a = a
+stripDataBlocks :: [Inline] -> [Inline]
+stripDataBlocks t@((Str x) : xs) = if "{{#data:" `T.isPrefixOf` x then [] else t
+stripDataBlocks a = a
 
 npcToPandoc :: NPC -> [Inline]
 npcToPandoc x = [Str $ npcName x, Space] ++ (maybe [] (\k -> [Str "-", Space, Str k]) $ npcRole x)
@@ -229,7 +232,7 @@ main = runSimpleShakePlus $ do
       pullJson x = do
        logInfo $ displayShow $ "Polling " <> x
        k <- jsonLookup . RemoteJSONLookup $ x
---       logInfo $ displayShow $ "Receieved: " <> (T.pack $ show k)
+       logDebug $ displayShow $ "Receieved: " <> (T.pack $ show k)
        return k
 
   let subcatRequest u a x = pullJson $ "https://" <> u <> "/" <> a <> "?action=query&list=categorymembers&cmtitle=" <> x <> "&cmlimit=500&cmtype=subcat&format=json"
@@ -238,7 +241,7 @@ main = runSimpleShakePlus $ do
 
       recSubcats u a x = recCollectP (fmap (S.fromList . viewCmTitles) . subcatRequest u a) mempty x
 
-  "trainingset.txt" %> \out -> do
+  "out/trainingset.txt" %> \out -> do
     xs  <- getDirectoryFiles $(mkRelDir ".") ["processed/markdown//*.md"]
     xs' <- forM xs (evaluate <=< readFile')
     let ys = map (T.unlines . (\x -> ["<|startoftext|>"] ++ T.lines x ++ ["<|endoftext|>"])) xs'
@@ -253,7 +256,6 @@ main = runSimpleShakePlus $ do
       (x, _) <- splitExtension . filename $ out
       y <- contentRequest k api (T.pack . toFilePath $ x)
       let (y' :: Text) = switchContent apiType y
-      --logInfo $ displayShow $ y'
       writeFile' out $ y'
 
   ("*/*.md" `within` $(mkRelDir "processed/markdown")) %^> \out -> do
@@ -264,11 +266,10 @@ main = runSimpleShakePlus $ do
     case l of
        Left x -> writeFile' (fromWithin out) ""
        Right x -> do
-         logInfo $ displayShow x
-         let x' = walk stripJunkSections . walk convertNPCs . walk (stripLinks . deleteImages . deleteNotes) $ x
-         --k <- runPandocA $ writeMarkdown (def { writerExtensions = pandocExtensions})  $ x'
-         k <- runPandocA $ writeMarkdown def $ x'
-    --     logInfo $ displayShow  k
+         logDebug $ displayShow x
+         let x' = walk stripJunkSections . walk convertNPCs . walk (stripDataBlocks . stripLinks . deleteImages . deleteNotes) $ x
+         k <- runPandocA $ writeMarkdown myMDWriterOptions $ x'
+         logDebug $ displayShow  k
          writeFile' (fromWithin out) k
 
   ("*" `within` $(mkRelDir "manifests/derived/")) %^> \out -> do
@@ -277,9 +278,9 @@ main = runSimpleShakePlus $ do
     (WikiManifest{..}) <- readYaml (fromWithin src)
     ys <- forP includeCategories $ recSubcats (T.pack $ toFilePath $ extract out) api
     let ys' = foldr S.union S.empty ys
-    logInfo $ displayShow $ ys'
+    logDebug $ displayShow $ ys'
     zs <- forP (includeCategories <> toList ys') $ pagesRequest (T.pack $ toFilePath $ extract out) api
-    let zs' = filter (not .  (\x -> T.isInfixOf "/" x || T.isInfixOf "&" x || T.isInfixOf "%" x)) $ join $ viewCmTitles <$> zs
+    let zs' = filter (not .  (\x -> any (`T.isInfixOf` x) ["/","&","%","+","+"])) $ join $ viewCmTitles <$> zs
     BS.writeFile (toFilePath . fromWithin $ out) $ Yaml.encode $ WikiManifest {includeCategories = [], includePages = zs', .. }
 
   let wikiManifest x = do
@@ -293,15 +294,29 @@ main = runSimpleShakePlus $ do
   phony "mortalkombat" $ wikiManifest "mortalkombat.fandom.com"
   phony "pokemon"      $ wikiManifest "pokemon.gamepedia.com"
   phony "rickandmorty" $ wikiManifest "rickandmorty.fandom.com"
+  phony "sonic"        $ wikiManifest "sonic.fandom.com"
   phony "startrek"     $ wikiManifest "memory-alpha.fandom.com"
   phony "wikipedia"    $ wikiManifest "en.wikipedia.org"
   phony "wow"          $ wikiManifest "wow.gamepedia.com"
 
   phony "train"        $ do
-    need ["trainingset.txt"]
-    command_ [] "python3" ["gpt_2_simple.py", "finetune", "trainingset.txt",
+    need ["out/trainingset.txt"]
+    command_ [] "python3" ["gpt_2_simple.py", "finetune", "out/trainingset.txt",
                            "--sample_every", "2500",
-                           "--model_dir", "gpt_2/model",
-                           "--checkpoint_dir", "gpt_2/checkpoint"]
+                           "--model_dir", "out/model",
+                           "--checkpoint_dir", "out/checkpoint",
+                           "--print_every", "1",
+                           "--save_every", "1000"]
+
+  phony "generate"     $ do
+    command_ [] "python3" ["gpt_2_simple.py", "generate",
+                           "--temperature", "0.8",
+                           "--checkpoint_dir", "out/checkpoint",
+                           "--nsamples", "20",
+                           "--folder", "out/gen",
+                           "--truncate", "<|endoftext|>",
+                           "--length", "1500",
+                           "--prefix","<|startoftext|>",
+                           "--include_prefix", "False"]
 
   want ["out.txt"]
