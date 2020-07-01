@@ -3,4 +3,6 @@ stack.yaml.lock
 .stack-to-nix.cache
 .shake
 .stack-work
-maniests/derived
+manifests/derived
+raw
+processed
