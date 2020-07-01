@@ -6,3 +6,4 @@ stack.yaml.lock
 manifests/derived
 raw
 processed
+__pycache__
