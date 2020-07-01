@@ -223,6 +223,8 @@ main = runSimpleShakePlus $ do
 
   jsonLookup <- addRemoteJSONOracleCache
 
+  readYaml <- newCache $ \src -> Yaml.decodeThrow =<< BS.readFile (toFilePath $ src)
+
   let pullJson :: Text -> RAction LogFunc Value
       pullJson x = do
        logInfo $ displayShow $ "Polling " <> x
@@ -236,7 +238,7 @@ main = runSimpleShakePlus $ do
 
       recSubcats u a x = recCollectP (fmap (S.fromList . viewCmTitles) . subcatRequest u a) mempty x
 
-  "out.txt" %> \out -> do
+  "trainingset.txt" %> \out -> do
     xs  <- getDirectoryFiles $(mkRelDir ".") ["processed/markdown//*.md"]
     xs' <- forM xs (evaluate <=< readFile')
     let ys = map (T.unlines . (\x -> ["<|startoftext|>"] ++ T.lines x ++ ["<|endoftext|>"])) xs'
@@ -247,7 +249,7 @@ main = runSimpleShakePlus $ do
       k' <- parseRelFile (T.unpack k)
       let (src :: Path Rel File) = $(mkRelDir "manifests/derived") </> k'
       needP [src]
-      (WikiManifest{..}) <- Yaml.decodeThrow =<< BS.readFile (toFilePath src)
+      (WikiManifest{..}) <- readYaml src
       (x, _) <- splitExtension . filename $ out
       y <- contentRequest k api (T.pack . toFilePath $ x)
       let (y' :: Text) = switchContent apiType y
@@ -255,13 +257,14 @@ main = runSimpleShakePlus $ do
       writeFile' out $ y'
 
   ("*/*.md" `within` $(mkRelDir "processed/markdown")) %^> \out -> do
+    logInfo $ displayShow $ "Processing " <> (toFilePath . fromWithin $ out)
     src <- blinkAndMapM $(mkRelDir "raw/mediawiki") (replaceExtension ".mediawiki") out
     a <- readFile' (fromWithin src)
     l <- liftIO $ runIO $ readMediaWiki (def { readerExtensions = extensionsFromList [Ext_smart]}) a
     case l of
        Left x -> writeFile' (fromWithin out) ""
        Right x -> do
-      --   logInfo $ displayShow x
+         logInfo $ displayShow x
          let x' = walk stripJunkSections . walk convertNPCs . walk (stripLinks . deleteImages . deleteNotes) $ x
          --k <- runPandocA $ writeMarkdown (def { writerExtensions = pandocExtensions})  $ x'
          k <- runPandocA $ writeMarkdown def $ x'
@@ -271,7 +274,7 @@ main = runSimpleShakePlus $ do
   ("*" `within` $(mkRelDir "manifests/derived/")) %^> \out -> do
     let src = blinkLocalDir $(mkRelDir "manifests/original/") out
     needP [fromWithin $ src]
-    (WikiManifest{..}) <- Yaml.decodeThrow =<< BS.readFile (toFilePath $ fromWithin $ src)
+    (WikiManifest{..}) <- readYaml (fromWithin src)
     ys <- forP includeCategories $ recSubcats (T.pack $ toFilePath $ extract out) api
     let ys' = foldr S.union S.empty ys
     logInfo $ displayShow $ ys'
@@ -279,13 +282,12 @@ main = runSimpleShakePlus $ do
     let zs' = filter (not .  (\x -> T.isInfixOf "/" x || T.isInfixOf "&" x || T.isInfixOf "%" x)) $ join $ viewCmTitles <$> zs
     BS.writeFile (toFilePath . fromWithin $ out) $ Yaml.encode $ WikiManifest {includeCategories = [], includePages = zs', .. }
 
-  let wikiManifest :: HasLogFunc r => Text -> RAction r ()
-      wikiManifest x = do
+  let wikiManifest x = do
       logInfo $ displayShow $ "Opening Wiki Manifest for " <> x
       x' <- parseRelFile (T.unpack x)
       let src = $(mkRelDir "manifests/derived") </> x'
       needP [src]
-      (WikiManifest{..}) <- Yaml.decodeThrow =<< BS.readFile (toFilePath $ src)
+      (WikiManifest{..}) <- readYaml src
       need $ flip map includePages $ T.unpack . (\a -> "processed/markdown/" <> x <> "/" <> a <> ".md")
 
   phony "mortalkombat" $ wikiManifest "mortalkombat.fandom.com"
@@ -294,5 +296,12 @@ main = runSimpleShakePlus $ do
   phony "startrek"     $ wikiManifest "memory-alpha.fandom.com"
   phony "wikipedia"    $ wikiManifest "en.wikipedia.org"
   phony "wow"          $ wikiManifest "wow.gamepedia.com"
+
+  phony "train"        $ do
+    need ["trainingset.txt"]
+    command_ [] "python3" ["gpt_2_simple.py", "finetune", "trainingset.txt",
+                           "--sample_every", "2500",
+                           "--model_dir", "gpt_2/model",
+                           "--checkpoint_dir", "gpt_2/checkpoint"]
 
   want ["out.txt"]
