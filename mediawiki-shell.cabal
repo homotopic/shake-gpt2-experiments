@@ -1,0 +1,45 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.34.2.
+--
+-- see: https://github.com/sol/hpack
+
+name:           mediawiki-shell
+version:        0.1.0.0
+synopsis:       Shell package for pulling mediawiki
+category:       Web
+author:         Me
+maintainer:     example@example.com
+copyright:      20XX Me
+license:        BSD3
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+executable build-site
+  main-is: Shakefile.hs
+  other-modules:
+      Paths_mediawiki_shell
+  hs-source-dirs:
+      ./.
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N -Wall
+  build-depends:
+      aeson
+    , base >=4.7 && <5
+    , comonad
+    , comonad-extras
+    , free
+    , http-conduit
+    , lens
+    , lens-aeson
+    , megaparsec
+    , pandoc
+    , pandoc-types
+    , rio
+    , shake
+    , shakebook
+    , slick
+    , split
+    , text-time
+  default-language: Haskell2010

@@ -1,0 +1,6 @@
+stack.yaml.lock
+*.swp
+.stack-to-nix.cache
+.shake
+.stack-work
+maniests/derived
