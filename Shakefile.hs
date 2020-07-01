@@ -10,7 +10,9 @@ import           Control.Comonad
 import           Control.Lens hiding (view)
 import           Data.Aeson.Lens
 import           Data.List.Split
+import qualified Data.Yaml as Yaml
 import           RIO hiding (some, try, many)
+import qualified RIO.ByteString as BS
 import qualified RIO.ByteString.Lazy as LBS
 import           RIO.List
 import           RIO.Partial
@@ -183,6 +185,7 @@ data ApiType = ApiType1 | ApiType2
   deriving (Eq, Show, Generic)
 
 instance FromJSON ApiType
+instance ToJSON ApiType
 
 data WikiManifest = WikiManifest {
   api               :: Text
@@ -192,6 +195,17 @@ data WikiManifest = WikiManifest {
 } deriving (Eq, Show, Generic)
 
 instance FromJSON WikiManifest
+instance ToJSON WikiManifest
+
+apiType1 = view (key "query"
+               . key "pages" . values
+               . key "revisions" . values
+               . key "slots" 
+               . key "main"
+               . key "content" . _String)
+
+switchContent ApiType1 = apiType1
+switchContent ApiType2 = undefined
 
 recCollectP :: (MonadUnliftAction m, Ord a) => (a -> m (Set a)) -> Set a -> a -> m (Set a)
 recCollectP g exs x = do
@@ -217,13 +231,6 @@ main = runSimpleShakePlus $ do
 
       recSubcats u a x = recCollectP (fmap (S.fromList . viewCmTitles) . subcatRequest u a) mempty x
 
-      apiFor x = do
-        let x' = $(mkRelDir "manifests/original") </> x </> $(mkRelFile "api")
-        d <- doesFileExist x'
-        case d of
-          False -> return "api.php"
-          True -> head . T.lines <$> readFile' (x')
-
   "out.txt" %> \out -> do
     xs  <- getDirectoryFiles $(mkRelDir ".") ["processed/markdown//*.md"]
     xs' <- forM xs (evaluate <=< readFile')
@@ -232,16 +239,13 @@ main = runSimpleShakePlus $ do
 
   "raw/mediawiki/*/*.mediawiki" %> \out -> do
       let k = T.pack . (!! 2) . splitOn "/" . toFilePath$ out
-      k' <- parseRelDir (T.unpack k)
-      a <- apiFor k'
+      k' <- parseRelFile (T.unpack k)
+      let (src :: Path Rel File) = $(mkRelDir "manifests/derived") </> k'
+      needP [src]
+      (WikiManifest{..}) <- Yaml.decodeThrow =<< BS.readFile (toFilePath src)
       (x, _) <- splitExtension . filename $ out
-      y <- contentRequest k a (T.pack . toFilePath $ x)
-      let y' = view (key "query"
-                   . key "pages" . values
-                   . key "revisions" . values
-                   . key "slots" 
-                   . key "main"
-                   . key "content" . _String) $ y
+      y <- contentRequest k api (T.pack . toFilePath $ x)
+      let y' = apiType1 y
       writeFile' out y'
 
   ("*/*.md" `within` $(mkRelDir "processed/markdown")) %^> \out -> do
@@ -258,26 +262,25 @@ main = runSimpleShakePlus $ do
     --     logInfo $ displayShow  k
          writeFile' (fromWithin out) k
 
-  ("*/include" `within` $(mkRelDir "manifests/derived/")) %^> \out -> do
-    let k = T.pack . (!! 0) . splitOn "/" . toFilePath . extract $ out
+  ("*" `within` $(mkRelDir "manifests/derived/")) %^> \out -> do
     let src = blinkLocalDir $(mkRelDir "manifests/original/") out
-    xs <- readFileWithin src
-    es <- readFileWithin $ fmap ((</> $(mkRelFile "exclude")) . parent) src
-    k' <- parseRelDir (T.unpack k)
-    a <- apiFor k'
-    ys <- forP (T.lines xs) $ recSubcats k a
+    needP [fromWithin $ src]
+    (WikiManifest{..}) <- Yaml.decodeThrow =<< BS.readFile (toFilePath $ fromWithin $ src)
+    ys <- forP includeCategories $ recSubcats (T.pack $ toFilePath $ extract out) api
     let ys' = foldr S.union S.empty ys
     logInfo $ displayShow $ ys'
-    zs <- forP (T.lines xs <> toList ys') $ pagesRequest k a
-    let zs' = filter (not .  T.isInfixOf "/") $ filter (not . (`elem` (T.lines es))) $ join $ viewCmTitles <$> zs
-    writeFile' (fromWithin out) $ T.unlines zs'
+    zs <- forP (includeCategories <> toList ys') $ pagesRequest (T.pack $ toFilePath $ extract out) api
+    let zs' = filter (not .  T.isInfixOf "/") $ join $ viewCmTitles <$> zs
+    BS.writeFile (toFilePath . fromWithin $ out) $ Yaml.encode $ WikiManifest {includeCategories = [], includePages = zs', .. }
 
   let wikiManifest :: HasLogFunc r => Text -> RAction r ()
       wikiManifest x = do
       logInfo $ displayShow $ "Opening Wiki Manifest for " <> x
-      x' <- parseRelDir (T.unpack x)
-      xs <- readFile' $ $(mkRelDir "manifests/derived") </> x' </> $(mkRelFile "include")
-      need $ flip map (filter (/= "") $ T.lines xs) $ T.unpack . (\a -> "processed/markdown/" <> x <> "/" <> a <> ".md")
+      x' <- parseRelFile (T.unpack x)
+      let src = $(mkRelDir "manifests/derived") </> x'
+      needP [src]
+      (WikiManifest{..}) <- Yaml.decodeThrow =<< BS.readFile (toFilePath $ src)
+      need $ flip map includePages $ T.unpack . (\a -> "processed/markdown/" <> x <> "/" <> a <> ".md")
 
   phony "mortalkombat" $ wikiManifest "mortalkombat.fandom.com"
   phony "pokemon"      $ wikiManifest "pokemon.gamepedia.com"

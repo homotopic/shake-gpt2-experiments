@@ -1,4 +1,4 @@
-api: https://en.wikipedia.org/w/api.php
+api: w/api.php
 apiType: ApiType1
 includeCategories:
 - Category:Military of ancient Rome

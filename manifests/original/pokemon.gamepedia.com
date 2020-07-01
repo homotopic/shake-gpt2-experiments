@@ -1,4 +1,4 @@
-api: https://pokemon.gamepedia.com/api.php
+api: api.php
 apiType: ApiType2
 includeCategories:
 - Category:Pokémon
