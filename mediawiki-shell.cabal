@@ -42,4 +42,5 @@ executable build-site
     , slick
     , split
     , text-time
+    , yaml
   default-language: Haskell2010

@@ -9,7 +9,7 @@
 import           Control.Comonad
 import           Control.Lens hiding (view)
 import           Data.Aeson.Lens
-import           Data.List.Split
+import           Data.List.Split hiding (oneOf)
 import qualified Data.Yaml as Yaml
 import           RIO hiding (some, try, many)
 import qualified RIO.ByteString as BS
@@ -35,8 +35,11 @@ import qualified Control.Exception as EUnsafe
 import Control.Monad.Catch hiding (try)
 import           Text.Pandoc.Walk
 
+outputFolder = $(mkRelFile "out")
+
 myMDWriterOptions :: WriterOptions
 myMDWriterOptions = def { writerExtensions = pandocExtensions }
+--myMDWriterOptions = def
 
 type Parser = Parsec Void Text
 
@@ -54,7 +57,7 @@ data NPC = NPC {
 } deriving (Eq, Show, Ord)
 
 mediafield :: Parser Text
-mediafield = T.pack <$> many (alphaNumChar <|> spaceChar <|> char '\'' <|> char '\"' <|> char '-')
+mediafield = T.pack <$> many (alphaNumChar <|> spaceChar <|> char '\'' <|> char '"' <|> char '\"' <|> char '-' <|> char '.' <|> char ',' <|> char '?' <|> char '!')
 
 npc :: Parser NPC
 npc = squiggles $ do
@@ -78,6 +81,42 @@ affiliation = choice [
  , Neutral  <$ string "Neutral"
  , Hostile  <$ string "combat"
  ]
+
+data Illocution = Say | Yell | Emote
+  deriving (Eq, Show, Ord, Enum, Read)
+
+illocution :: Parser Illocution
+illocution = choice [
+   Say  <$ string "say"
+ , Yell <$ string "yell"
+ , Emote <$ string "emote"
+ ]
+
+data Quote = Quote {
+  quoteIllocution :: Illocution
+, quoteText       :: Text
+} deriving (Eq, Show, Ord)
+
+quote :: Parser Quote
+quote = squiggles $ do
+  void $ choice [string "text", string "Text"] >> char '|'
+  quoteIllocution <- illocution
+  void $ char '|'
+  quoteText <- mediafield
+  return Quote{..}
+
+data Ability = Ability {
+  abilityName :: Text
+, abilityEffect :: Text
+} deriving (Eq, Show, Ord)
+
+ability :: Parser Ability
+ability = squiggles $ do
+  void $ choice [string "abilities", string "Abilities"] >> char '|'
+  abilityName <- mediafield
+  void $ char '|'
+  abilityEffect <- mediafield
+  return Ability{..}
 
 iconmwfield :: Parser Text
 iconmwfield = void (string "icon=") >> mediafield
@@ -104,9 +143,6 @@ data CiteBook = CiteBook {
 , cbYear :: Text
 , cbISBN :: Text
 } deriving (Eq, Show, Ord)
-
-readMediawikiFile :: (MonadAction m, MonadThrow m) => ReaderOptions -> Path Rel File -> m Pandoc
-readMediawikiFile ropts src = readFile' src >>= runPandocA . readMediaWiki ropts
 
 viewCmTitles = toListOf (key "query" . key "categorymembers" . values . key "title" . _String)
 
@@ -171,11 +207,25 @@ stripDataBlocks t@((Str x) : xs) = if "{{#data:" `T.isPrefixOf` x then [] else t
 stripDataBlocks a = a
 
 npcToPandoc :: NPC -> [Inline]
-npcToPandoc x = [Str $ npcName x, Space] ++ (maybe [] (\k -> [Str "-", Space, Str k]) $ npcRole x)
+npcToPandoc NPC{..} = [Str npcName, Space] ++ (maybe [] (\k -> [Str "-", Space, Str k]) npcRole)
+
+quoteToPandoc :: Quote -> [Inline]
+quoteToPandoc Quote{..} = [Str quoteText]
+
+abilityToPandoc :: Ability -> [Inline]
+abilityToPandoc Ability{..} = [Str $ abilityName <> "-" <> abilityEffect]
 
 convertNPCs :: [Block] -> [Block]
 convertNPCs t@(x@(RawBlock b k) : xs) = (maybe x (Plain . npcToPandoc) $ parseMaybe npc k) : xs
 convertNPCs a = a
+
+convertQuotes :: [Block] -> [Block]
+convertQuotes t@(x@(RawBlock b k) : xs) = (maybe x (Plain . quoteToPandoc) $ parseMaybe quote k) : xs
+convertQuotes a = a
+
+convertAbilities :: [Block] -> [Block]
+convertAbilities t@(x@(RawBlock b k) : xs) = (maybe x (Plain . abilityToPandoc) $ parseMaybe ability k) : xs
+convertAbilities a = a
 
 stripRawInline :: [Inline] -> [Inline]
 stripRawInline t@((RawInline _ _) : xs) = stripRawInline xs
@@ -184,6 +234,11 @@ stripRawInline x = x
 stripRawBlock :: [Block] -> [Block]
 stripRawBlock t@((RawBlock _ _) : xs) = stripRawBlock xs
 stripRawBlock x = x
+
+onlyParaBlocks :: [Block] -> [Block]
+onlyParaBlocks t@(x@(Para _) : xs) = x : onlyParaBlocks xs
+onlyParaBlocks (x : xs)  = onlyParaBlocks xs
+onlyParaBlocks []        = []
 
 data ApiType = ApiType1 | ApiType2
   deriving (Eq, Show, Generic)
@@ -243,7 +298,7 @@ main = runSimpleShakePlus $ do
 
   "out/trainingset.txt" %> \out -> do
     xs  <- getDirectoryFiles $(mkRelDir ".") ["processed/markdown//*.md"]
-    xs' <- forM xs (evaluate <=< readFile')
+    xs' <- forM xs $ (evaluate <=< readFile')
     let ys = map (T.unlines . (\x -> ["<|startoftext|>"] ++ T.lines x ++ ["<|endoftext|>"])) xs'
     writeFile' out $ T.unlines ys
 
@@ -262,13 +317,15 @@ main = runSimpleShakePlus $ do
     logInfo $ displayShow $ "Processing " <> (toFilePath . fromWithin $ out)
     src <- blinkAndMapM $(mkRelDir "raw/mediawiki") (replaceExtension ".mediawiki") out
     a <- readFile' (fromWithin src)
+    (f, _) <- splitExtension (filename $ extract src)
     l <- liftIO $ runIO $ readMediaWiki (def { readerExtensions = extensionsFromList [Ext_smart]}) a
     case l of
        Left x -> writeFile' (fromWithin out) ""
        Right x -> do
          logDebug $ displayShow x
-         let x' = walk stripJunkSections . walk convertNPCs . walk (stripDataBlocks . stripLinks . deleteImages . deleteNotes) $ x
-         k <- runPandocA $ writeMarkdown myMDWriterOptions $ x'
+         let x' = walk stripJunkSections . walk (convertAbilities . convertQuotes . convertNPCs) . walk (stripDataBlocks . stripLinks . deleteImages . deleteNotes) $ x
+         let y = Pandoc mempty [(Header 1 nullAttr [Str (T.pack $ toFilePath $ f)])] <> x'
+         k <- runPandocA $ writeMarkdown myMDWriterOptions $ y
          logDebug $ displayShow  k
          writeFile' (fromWithin out) k
 
@@ -300,7 +357,7 @@ main = runSimpleShakePlus $ do
   phony "wow"          $ wikiManifest "wow.gamepedia.com"
 
   phony "train"        $ do
-    need ["out/trainingset.txt"]
+    needIn outputFolder [$(mkRelFile "trainingset.txt")]
     command_ [] "python3" ["gpt_2_simple.py", "finetune", "out/trainingset.txt",
                            "--sample_every", "2500",
                            "--model_dir", "out/model",
@@ -314,9 +371,11 @@ main = runSimpleShakePlus $ do
                            "--checkpoint_dir", "out/checkpoint",
                            "--nsamples", "20",
                            "--folder", "out/gen",
-                           "--truncate", "<|endoftext|>",
+--                           "--truncate", "<|endoftext|>",
                            "--length", "1500",
-                           "--prefix","<|startoftext|>",
+                           "--prefix","Draenei who lived during the Roman Empire",
                            "--include_prefix", "False"]
 
-  want ["out.txt"]
+  phony "clean"        $ do
+    logInfo $ "Cleaning files in " <> displayShow outputFolder
+    removeFilesAfter outputFolder ["//*"]
